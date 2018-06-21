@@ -12,6 +12,7 @@ var bcrypt = require('bcrypt');
 var jwt    = require('jsonwebtoken'); // used to create, sign, and verify tokens
 var config = require('./config'); // get our config file
 var User   = require('./app/models/user'); // get our mongoose model
+var sample_data = require('./db/sample_dataset'); // sample dataset to populate db
 
 // =================================================================
 // configuration ===================================================
@@ -33,6 +34,12 @@ app.use(morgan('dev'));
 // =================================================================
 // routes ==========================================================
 // =================================================================
+
+
+/**
+ * Run this method first to add data to mongodb
+ * See db/sample_dataset
+ */
 app.get('/setup', function(req, res) {
 
 	// create a sample user
@@ -46,7 +53,26 @@ app.get('/setup', function(req, res) {
 		if (err) throw err;
 
 		console.log('User saved successfully.');
-		res.json({ success: true });
+	});
+
+	sample_data.forEach(function(user){
+		var new_user = new User({ 
+			name: user.name,
+			email: user.email, 
+			password: bcrypt.hashSync(user.password, 10),
+			admin: true 
+		});
+
+		new_user.save(function(err) {
+			if (err) throw err;
+			else{
+				console.log('User saved successfully.');
+			}
+		});
+	});
+
+	res.json({
+		success: true
 	});
 });
 
@@ -114,16 +140,11 @@ apiRoutes.post('/authenticate', function(req, res) {
 				if (result) {
 					// if user is found and password is right
 					// create a token
-					var payload = {
-						admin: user.admin	
-					}
-					var token = jwt.sign(payload, app.get('superSecret'), {
-						expiresIn: 86400 // expires in 24 hours
-					});
+					var token = generateToken(user)
 	
 					res.json({
 						success: true,
-						message: 'Enjoy your token!',
+						message: 'Successfully authenticated.',
 						token: token
 					});
 					
@@ -139,9 +160,23 @@ apiRoutes.post('/authenticate', function(req, res) {
 	});
 });
 
-// ---------------------------------------------------------
-// route middleware to authenticate and check token
-// ---------------------------------------------------------
+
+app.get('/logout', function(req, res, next){
+	var token = req.body.token || req.param('token') || req.headers['x-access-token'];
+
+	if (token){
+		// fill code
+	}
+});
+
+
+
+/* ---------------------------------------------------------
+   route middleware to authenticate and check token
+   Only applied to routes below this.
+   Use something like Postman to test the API
+   with token attached to the request in the body, header or url.
+   --------------------------------------------------------- */
 apiRoutes.use(function(req, res, next) {
 
 	// check header or url parameters or post parameters for token
@@ -157,6 +192,7 @@ apiRoutes.use(function(req, res, next) {
 			} else {
 				// if everything is good, save to request for use in other routes
 				req.decoded = decoded;	
+				console.log(req.decoded);
 				next();
 			}
 		});
@@ -174,19 +210,69 @@ apiRoutes.use(function(req, res, next) {
 	
 });
 
-// ---------------------------------------------------------
-// authenticated routes
-// ---------------------------------------------------------
-apiRoutes.get('/', function(req, res) {
-	res.json({ message: 'Welcome to the coolest API on earth!' });
+/* ---------------------------------------------------------
+   authenticated routes
+   To call these, you need to send the auth token
+   as a query param in the url, as an auth header in the
+   HTTP request, or as a parameter in the request body. 
+   --------------------------------------------------------- */
+
+
+/**
+ * Validate a given token
+ * with token as a query param: http://localhost:8080/api/token/validate?token=... 
+ */
+apiRoutes.get('/token/validate', function(req, res, next){
+	res.json({
+		success: true,
+		message: 'token valid'
+	})
 });
 
+
+/**
+ * generate new token for an authenticated user.
+ * with token as a query param: http://localhost:8080/api/token/generate?token=...
+ */
+apiRoutes.get('/token/generate', function(req, res, next){
+
+	user_name = req.decoded.user;
+	console.log(user_name);
+
+	User.findOne({
+		name: user_name
+	}, function(err, user) {
+
+		if (err) throw err;
+
+		if (!user) {
+			res.json({ success: false, message: 'Authentication failed. User not found.' });
+		} else if (user) {
+			res.json({
+				success: true,
+				message: 'issued new token',
+				token: generateToken(user)
+			});
+		}
+	});
+	
+});
+
+
+/**
+ * show all users in db
+ * with token as a query param: http://localhost:8080/api/users?token=...
+ */ 
 apiRoutes.get('/users', function(req, res) {
 	User.find({}, function(err, users) {
 		res.json(users);
 	});
 });
 
+/**
+ * show info stored in token
+ * with token as a query param: http://localhost:8080/api/check?token=...
+ */ 
 apiRoutes.get('/check', function(req, res) {
 	res.json(req.decoded);
 });
@@ -198,3 +284,24 @@ app.use('/api', apiRoutes);
 // =================================================================
 app.listen(port);
 console.log("Server started at http://localhost:" + port)
+
+
+
+/**
+ * Helper method to generate new token
+ * @param {*} user 
+ */
+var generateToken = function(user){
+	var payload = {
+		user: user.name,
+		password: user.password, // hashed with salt
+		admin: user.admin,
+		timestamp: Date.now()	
+	}
+
+	var token = jwt.sign(payload, app.get('superSecret'), {
+		expiresIn: 600 // expires in 10 minutes
+	});
+
+	return token;
+}
